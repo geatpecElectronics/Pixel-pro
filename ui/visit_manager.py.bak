@@ -1,0 +1,349 @@
+# =============================================================
+#  ui/visit_manager.py  — Visit list + Create visit form
+#  All DB data extracted as plain dicts before session closes
+# =============================================================
+import os
+from datetime import datetime
+from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QLabel, QPushButton, QFrame, QScrollArea, QLineEdit, QTextEdit,
+    QMessageBox, QStackedWidget, QGridLayout)
+from PyQt6.QtCore import Qt, QTimer, QDateTime
+from PyQt6.QtGui import QFont
+from ui._styles import RED, DARK_RED, BG, FIELD, TEXT_MID, TEXT_LITE
+from models.database import (get_session, Patient, Visit, CapturedImage,
+                              gen_visit_id)
+from utils.session import UserSession
+
+
+def _load_patient_dict(patient_id: int) -> dict:
+    """Load patient as plain dict — no detach risk."""
+    from sqlalchemy.orm import joinedload
+    sess = get_session()
+    p = sess.query(Patient).filter(Patient.id==patient_id, Patient.is_deleted!=True).first()
+    if not p:
+        sess.close()
+        return {}
+    d = {
+        "id": p.id, "patient_id": p.patient_id or "—",
+        "first_name": p.first_name or "", "last_name": p.last_name or "",
+        "dob": p.dob, "gender": p.gender or "—",
+        "phone": p.phone or "—", "ref_doc": p.ref_doc or "—",
+    }
+    sess.close()
+    return d
+
+
+def _load_visits_for_patient(patient_id: int) -> list:
+    """Return list of plain dicts — safe to use after session close."""
+    from sqlalchemy.orm import joinedload
+    sess = get_session()
+    visits = (sess.query(Visit)
+              .options(joinedload(Visit.images))
+              .filter(Visit.patient_id==patient_id, Visit.is_deleted!=True)
+              .order_by(Visit.visit_date.desc())
+              .all())
+    result = []
+    for v in visits:
+        imgs = [i for i in (v.images or []) if not i.is_deleted]
+        result.append({
+            "id":            v.id,
+            "visit_id":      v.visit_id or "—",
+            "visit_date":    v.visit_date,
+            "doctor":        v.doctor or "—",
+            "department":    v.department or "—",
+            "clinical_notes":v.clinical_notes or "",
+            "image_count":   len(imgs),
+        })
+    sess.close()
+    return result
+
+
+class VisitCard(QFrame):
+    """Card built entirely from a plain dict — no ORM objects."""
+    def __init__(self, vd: dict, on_image, on_report):
+        super().__init__()
+        self.visit_id_pk = vd["id"]
+        self.setFixedHeight(84)
+        self.setStyleSheet("QFrame{background:white;border-radius:8px;"
+                           "border:1px solid #e5e7eb;}"
+                           "QFrame:hover{border-color:#b01c20;}")
+        lay = QHBoxLayout(self); lay.setContentsMargins(16,0,16,0); lay.setSpacing(14)
+
+        # Date badge
+        badge = QFrame(); badge.setFixedSize(56,56)
+        badge.setStyleSheet(f"background:{RED};border-radius:8px;")
+        bl = QVBoxLayout(badge); bl.setContentsMargins(4,4,4,4); bl.setSpacing(0)
+        vdate = vd["visit_date"]
+        if vdate:
+            d = QLabel(vdate.strftime("%d")); d.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            d.setStyleSheet("color:white;font-size:18px;font-weight:bold;background:transparent;")
+            m = QLabel(vdate.strftime("%b")); m.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            m.setStyleSheet("color:rgba(255,255,255,0.8);font-size:10px;background:transparent;")
+            bl.addWidget(d); bl.addWidget(m)
+        lay.addWidget(badge)
+
+        info = QVBoxLayout(); info.setSpacing(3)
+        h = QLabel(f"Visit {vd['visit_id']}  ·  Dr. {vd['doctor']}  ·  {vd['department']}")
+        h.setStyleSheet("font-weight:bold;font-size:13px;color:#111827;background:transparent;")
+        n = vd["image_count"]
+        m = QLabel(f"🖼 {n} image{'s' if n!=1 else ''}  ·  "
+                   f"{vdate.strftime('%d %b %Y %H:%M') if vdate else '—'}")
+        m.setStyleSheet(f"font-size:11px;color:{TEXT_MID};background:transparent;")
+        info.addWidget(h); info.addWidget(m)
+        if vd["clinical_notes"]:
+            cn = QLabel(vd["clinical_notes"][:70] +
+                        ("…" if len(vd["clinical_notes"])>70 else ""))
+            cn.setStyleSheet(f"font-size:11px;color:{TEXT_LITE};background:transparent;")
+            info.addWidget(cn)
+        lay.addLayout(info, stretch=1)
+
+        for lbl, fn, bg in [
+            ("📷 Imaging", lambda _=False, vid=vd["id"]: on_image(vid), RED),
+            ("📄 Report",  lambda _=False, vid=vd["id"]: on_report(vid), "#374151"),
+        ]:
+            b = QPushButton(lbl); b.setFixedSize(100,30)
+            b.setStyleSheet(f"QPushButton{{background:{bg};color:white;border:none;"
+                            f"border-radius:6px;font-size:11px;font-weight:bold;}}"
+                            f"QPushButton:hover{{opacity:0.85;}}")
+            b.clicked.connect(fn); lay.addWidget(b)
+
+
+class VisitManagerWindow(QMainWindow):
+    def __init__(self, patient_id: int, create_new: bool = False):
+        super().__init__()
+        self.patient_id = patient_id
+        self.patient_dict = _load_patient_dict(patient_id)
+        pname = (f"{self.patient_dict.get('first_name','')} "
+                 f"{self.patient_dict.get('last_name','')}").strip()
+        self.setWindowTitle(f"Pixel Pro — Visits: {pname}")
+        self.setMinimumSize(1200, 720)
+        self.setStyleSheet(f"QMainWindow{{background:{BG};font-family:'Segoe UI';}}")
+        self._build_ui()
+        self._load_visits()
+        if create_new:
+            QTimer.singleShot(100, lambda: self.stack.setCurrentIndex(1))
+        self._clock = QTimer(); self._clock.timeout.connect(self._tick)
+        self._clock.start(1000); self._tick()
+
+    # ── Toolbar ───────────────────────────────────────────────
+    def _build_toolbar(self):
+        bar = QFrame(); bar.setFixedHeight(56)
+        bar.setStyleSheet(f"QFrame{{background:{RED};}}")
+        lay = QHBoxLayout(bar); lay.setContentsMargins(14,0,14,0); lay.setSpacing(8)
+
+        bk = QPushButton("←"); bk.setFixedSize(36,36)
+        bk.setStyleSheet("QPushButton{background:transparent;color:white;border:none;"
+                         "font-size:18px;border-radius:4px;}"
+                         "QPushButton:hover{background:rgba(255,255,255,0.18);}")
+        bk.clicked.connect(self._go_back); lay.addWidget(bk)
+
+        pd = self.patient_dict
+        t = QLabel(f"Visits — {pd.get('first_name','')} {pd.get('last_name','')}  ·  "
+                   f"{pd.get('patient_id','—')}")
+        t.setStyleSheet("color:white;font-size:14px;font-weight:bold;background:transparent;")
+        lay.addWidget(t); lay.addStretch()
+
+        for attr, hdr in [("date_lbl","Date:"),("time_lbl","Time:")]:
+            col = QVBoxLayout(); col.setSpacing(0)
+            h = QLabel(hdr); h.setStyleSheet("color:#ddd;font-size:9px;background:transparent;")
+            v = QLabel(); v.setStyleSheet("color:white;font-size:13px;font-weight:bold;"
+                                          "background:transparent;")
+            setattr(self,attr,v); col.addWidget(h); col.addWidget(v); lay.addLayout(col)
+            if hdr == "Date:":
+                s = QLabel("|"); s.setStyleSheet("color:rgba(255,255,255,0.3);font-size:20px;"
+                                                 "background:transparent;padding:0 8px;")
+                lay.addWidget(s)
+        lay.addSpacing(8)
+        u = QLabel(f"👤  {UserSession.username()}")
+        u.setStyleSheet("color:white;font-size:12px;background:transparent;"); lay.addWidget(u)
+        lay.addSpacing(6)
+        nb = QPushButton("➕  New Visit"); nb.setFixedHeight(34)
+        nb.setStyleSheet("QPushButton{background:white;color:#831316;border:none;"
+                         "border-radius:6px;font-size:12px;font-weight:bold;padding:0 14px;}"
+                         "QPushButton:hover{background:#f5f5f5;}")
+        nb.clicked.connect(lambda: self.stack.setCurrentIndex(1)); lay.addWidget(nb)
+        lo = QPushButton("⏻"); lo.setFixedSize(36,36)
+        lo.setStyleSheet("QPushButton{background:transparent;color:white;border:none;font-size:20px;"
+                         "border-radius:4px;}QPushButton:hover{background:rgba(255,255,255,0.18);}")
+        lo.clicked.connect(self._logout); lay.addWidget(lo)
+        return bar
+
+    def _build_ui(self):
+        central = QWidget(); self.setCentralWidget(central)
+        root = QVBoxLayout(central); root.setContentsMargins(0,0,0,0); root.setSpacing(0)
+        root.addWidget(self._build_toolbar())
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self._build_visits_page())
+        self.stack.addWidget(self._build_new_visit_page())
+        root.addWidget(self.stack, stretch=1)
+
+    # ── Visit list page ───────────────────────────────────────
+    def _build_visits_page(self):
+        page = QWidget(); page.setStyleSheet(f"background:{BG};")
+        pl = QVBoxLayout(page); pl.setContentsMargins(24,16,24,16); pl.setSpacing(12)
+
+        # Patient summary strip
+        ps = QFrame(); ps.setStyleSheet(f"QFrame{{background:white;border-radius:10px;"
+                                        f"border-left:5px solid {RED};}}")
+        psl = QHBoxLayout(ps); psl.setContentsMargins(16,10,16,10)
+        pd = self.patient_dict
+        for lbl, val in [
+            ("Patient ID", pd.get("patient_id","—")),
+            ("Name",       f"{pd.get('first_name','')} {pd.get('last_name','')}"),
+            ("DOB",        pd["dob"].strftime("%d %b %Y") if pd.get("dob") else "—"),
+            ("Gender",     pd.get("gender","—")),
+            ("Phone",      pd.get("phone","—")),
+            ("Doctor",     pd.get("ref_doc","—")),
+        ]:
+            col = QVBoxLayout(); col.setSpacing(1)
+            ll = QLabel(lbl); ll.setStyleSheet(f"color:{TEXT_LITE};font-size:10px;background:transparent;")
+            vl = QLabel(val); vl.setStyleSheet(f"color:{RED};font-size:13px;font-weight:bold;"
+                                               f"background:transparent;")
+            col.addWidget(ll); col.addWidget(vl); psl.addLayout(col); psl.addStretch()
+        pl.addWidget(ps)
+
+        self.vc_lbl = QLabel()
+        self.vc_lbl.setStyleSheet(f"color:{TEXT_MID};font-size:12px;background:transparent;")
+        pl.addWidget(self.vc_lbl)
+
+        sc = QScrollArea(); sc.setWidgetResizable(True)
+        sc.setStyleSheet("QScrollArea{border:none;}")
+        self.visits_w = QWidget(); self.visits_w.setStyleSheet("background:transparent;")
+        self.visits_vl = QVBoxLayout(self.visits_w)
+        self.visits_vl.setContentsMargins(0,0,0,0); self.visits_vl.setSpacing(10)
+        sc.setWidget(self.visits_w); pl.addWidget(sc, stretch=1)
+        return page
+
+    def _load_visits(self):
+        while self.visits_vl.count():
+            item = self.visits_vl.takeAt(0)
+            if item.widget(): item.widget().deleteLater()
+
+        visits = _load_visits_for_patient(self.patient_id)
+        self.vc_lbl.setText(f"{len(visits)} visit{'s' if len(visits)!=1 else ''}")
+
+        if visits:
+            for vd in visits:
+                card = VisitCard(vd, self._open_imaging, self._open_report)
+                self.visits_vl.addWidget(card)
+        else:
+            e = QLabel("No visits yet. Click  ➕ New Visit  to start.")
+            e.setStyleSheet(f"color:{TEXT_LITE};font-size:14px;padding:40px;background:transparent;")
+            e.setAlignment(Qt.AlignmentFlag.AlignCenter); self.visits_vl.addWidget(e)
+        self.visits_vl.addStretch()
+
+    # ── New visit form page ───────────────────────────────────
+    def _build_new_visit_page(self):
+        page = QWidget(); page.setStyleSheet(f"background:{BG};")
+        pl = QVBoxLayout(page); pl.setContentsMargins(0,0,0,0); pl.setSpacing(0)
+
+        hdr = QFrame(); hdr.setFixedHeight(46)
+        hdr.setStyleSheet(f"QFrame{{background:{DARK_RED};}}")
+        hl = QHBoxLayout(hdr); hl.setContentsMargins(14,0,14,0)
+        bk = QPushButton("← Back")
+        bk.setStyleSheet("QPushButton{background:transparent;color:white;border:none;font-size:13px;}"
+                         "QPushButton:hover{text-decoration:underline;}")
+        bk.clicked.connect(lambda: self.stack.setCurrentIndex(0))
+        hl.addWidget(bk); hl.addStretch()
+        ht = QLabel("New Visit")
+        ht.setStyleSheet("color:white;font-size:14px;font-weight:bold;background:transparent;")
+        hl.addWidget(ht); pl.addWidget(hdr)
+
+        sc = QScrollArea(); sc.setWidgetResizable(True)
+        sc.setStyleSheet(f"QScrollArea{{border:none;background:{BG};}}")
+        body = QWidget(); body.setStyleSheet(f"background:{BG};")
+        bl = QVBoxLayout(body); bl.setContentsMargins(28,20,28,20); bl.setSpacing(14)
+
+        grid = QGridLayout(); grid.setSpacing(12); grid.setHorizontalSpacing(20)
+        self.vf_doctor = QLineEdit(); self.vf_doctor.setPlaceholderText("Doctor Name *")
+        self.vf_doctor.setFixedHeight(42); self.vf_doctor.setStyleSheet(FIELD)
+        self.vf_dept = QLineEdit(); self.vf_dept.setPlaceholderText("Department")
+        self.vf_dept.setFixedHeight(42); self.vf_dept.setStyleSheet(FIELD)
+        self.vf_notes = QTextEdit(); self.vf_notes.setPlaceholderText("Clinical notes…")
+        self.vf_notes.setFixedHeight(120); self.vf_notes.setStyleSheet(FIELD)
+
+        for lbl, wid, r, c in [
+            ("Doctor *",   self.vf_doctor, 0, 0),
+            ("Department", self.vf_dept,   0, 1),
+        ]:
+            ll = QLabel(lbl); ll.setStyleSheet("color:#4b5563;font-size:11px;background:transparent;")
+            grid.addWidget(ll, r*2, c); grid.addWidget(wid, r*2+1, c)
+        bl.addLayout(grid)
+        cn = QLabel("Clinical Notes")
+        cn.setStyleSheet("color:#4b5563;font-size:11px;background:transparent;")
+        bl.addWidget(cn); bl.addWidget(self.vf_notes); bl.addStretch()
+        sc.setWidget(body); pl.addWidget(sc, stretch=1)
+
+        sbar = QFrame(); sbar.setFixedHeight(60)
+        sbar.setStyleSheet(f"QFrame{{background:{DARK_RED};}}")
+        sbl = QHBoxLayout(sbar); sbl.setContentsMargins(14,0,14,0)
+        sbl.setSpacing(10); sbl.addStretch()
+
+        save_img = QPushButton("📷  Save & Start Imaging"); save_img.setFixedHeight(36)
+        save_img.setStyleSheet("QPushButton{background:white;color:#831316;border:none;"
+                               "border-radius:6px;font-size:13px;font-weight:bold;padding:0 20px;}"
+                               "QPushButton:hover{background:#f5f5f5;}")
+        save_img.clicked.connect(self._save_and_image)
+
+        save_only = QPushButton("💾  Save Visit"); save_only.setFixedHeight(36)
+        save_only.setStyleSheet("QPushButton{background:rgba(255,255,255,0.2);color:white;"
+                                "border:none;border-radius:6px;font-size:13px;padding:0 20px;}"
+                                "QPushButton:hover{background:rgba(255,255,255,0.3);}")
+        save_only.clicked.connect(lambda: self._save_visit(go_imaging=False))
+        sbl.addWidget(save_only); sbl.addWidget(save_img); pl.addWidget(sbar)
+        return page
+
+    def _save_visit(self, go_imaging=False) -> int:
+        """Saves visit and returns its primary key id."""
+        doc = self.vf_doctor.text().strip()
+        if not doc:
+            QMessageBox.warning(self, "Required", "Doctor name is required.")
+            return None
+        sess = get_session()
+        v = Visit(
+            visit_id       = gen_visit_id(sess),
+            patient_id     = self.patient_id,
+            doctor         = doc,
+            department     = self.vf_dept.text().strip(),
+            clinical_notes = self.vf_notes.toPlainText().strip(),
+            visit_date     = datetime.now(),
+        )
+        sess.add(v); sess.commit()
+        vid = v.id          # capture id before close
+        sess.close()
+
+        self.stack.setCurrentIndex(0)
+        self._load_visits()
+        if not go_imaging:
+            QMessageBox.information(self, "Saved", "Visit created.")
+        return vid
+
+    def _save_and_image(self):
+        vid = self._save_visit(go_imaging=True)
+        if vid:
+            self._open_imaging(vid)
+
+    # ── Navigation ────────────────────────────────────────────
+    def _open_imaging(self, visit_id_pk: int):
+        from ui.camera_capture import CameraCaptureWindow
+        self.cw = CameraCaptureWindow(visit_id_pk)
+        self.cw.show(); self.close()
+
+    def _open_report(self, visit_id_pk: int):
+        from ui.report_builder import ReportBuilderWindow
+        self.rw = ReportBuilderWindow(visit_id_pk)
+        self.rw.show()
+
+    def _go_back(self):
+        from ui.patient_manager import PatientManagerWindow
+        self.w = PatientManagerWindow(); self.w.show(); self.close()
+
+    def _logout(self):
+        UserSession.end()
+        from ui.login_window import LoginWindow
+        self.lw = LoginWindow(); self.lw.show(); self.close()
+
+    def _tick(self):
+        now = QDateTime.currentDateTime()
+        self.date_lbl.setText(now.toString("dd-MM-yyyy"))
+        self.time_lbl.setText(now.toString("hh:mm AP"))

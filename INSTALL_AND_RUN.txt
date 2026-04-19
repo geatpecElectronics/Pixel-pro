@@ -1,0 +1,35 @@
+============================================================
+  PIXEL PRO — INSTALL & RUN GUIDE
+  Build: 2025-03-10-v3
+============================================================
+
+STEP 1 — STOP THE APP if it is running.
+
+STEP 2 — DELETE OLD FILES:
+  Delete everything inside C:\MedCamPy\
+  (DO NOT delete the folder itself, just its contents)
+  
+  Or run this in PowerShell as Administrator:
+    Remove-Item C:\MedCamPy\* -Recurse -Force
+
+STEP 3 — EXTRACT THIS ZIP:
+  Extract ALL contents of MedCamPy.zip into C:\MedCamPy\
+  After extraction you should see:
+    C:\MedCamPy\app.py
+    C:\MedCamPy\VERSION.txt
+    C:\MedCamPy\ui\
+    C:\MedCamPy\models\
+    etc.
+
+STEP 4 — INSTALL DEPENDENCIES (first time only):
+  pip install PyQt6 SQLAlchemy Pillow
+  pip install pydicom numpy   (optional - for DICOM export)
+
+STEP 5 — RUN:
+  python C:\MedCamPy\app.py
+
+============================================================
+IMPORTANT: Your database (pixelpro.db) is NOT deleted.
+  All patients and visits are preserved.
+  Old medcam.db patients will be migrated automatically.
+============================================================

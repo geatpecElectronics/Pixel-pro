@@ -1,0 +1,14 @@
+LABOMED MEDCAMPY SOFTWARE LICENSE AGREEMENT
+============================================
+
+Copyright (c) 2026 Labomed. All rights reserved.
+
+This software is proprietary and confidential. Unauthorized copying,
+distribution, or use of this software is strictly prohibited.
+
+This software is provided for authorized use only with Labomed medical
+imaging equipment and patient management systems.
+
+By installing this software, you agree to the terms of this license.
+
+For support: support@labomed.com

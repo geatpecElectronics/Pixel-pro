@@ -1,0 +1,12 @@
+Pixel Pro - Build Version: 2025-03-10-v3
+Files updated this build:
+  - models/database.py
+  - ui/dashboard_window.py
+  - ui/patient_manager.py
+  - ui/visit_manager.py
+  - ui/camera_capture.py
+  - ui/report_builder.py
+  - ui/annotation_editor.py
+
+IMPORTANT: Replace ALL files in C:\MedCamPy\ with this zip contents.
+Do not merge — delete old files first, then extract fresh.

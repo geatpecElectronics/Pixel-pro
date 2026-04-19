@@ -1,0 +1,135 @@
+=============================================================
+  Pixel Pro — Build Instructions
+  Output: installer\PixelPro_Setup.exe  (single shareable file)
+=============================================================
+
+WHAT THE INSTALLER DOES (automatically, no user action needed)
+--------------------------------------------------------------
+  1. Installs PixelPro.exe + all files to:
+       C:\Program Files\Labomed\PixelPro\
+  2. Installs VC++ 2022 Runtime  (silently, if not present)
+  3. Installs RNDIS USB driver   (silently, for USB camera)
+  4. Creates Desktop shortcut
+  5. Creates Start Menu > Labomed > Pixel Pro
+  6. Adds Add/Remove Programs entry
+  7. Creates full uninstaller
+
+  End user: double-click PixelPro_Setup.exe -> Next -> Next -> Finish.
+  No Python, no GStreamer, no drivers to install manually.
+
+
+ONE-TIME SETUP (on YOUR build machine only)
+-------------------------------------------
+Do these once. Never needed on target machines.
+
+1. Python 3.10+
+     https://python.org
+     Tick "Add Python to PATH" during install.
+
+2. Python packages:
+     pip install pyinstaller pillow reportlab pydicom
+
+3. GStreamer COMPLETE (MSVC 64-bit)
+     https://gstreamer.freedesktop.org/download/
+     Choose: msvc  |  64-bit  |  COMPLETE (not Runtime)
+     Install to default: C:\Program Files\gstreamer\1.0\msvc_x86_64
+
+4. NSIS 3.x
+     https://nsis.sourceforge.io/Download
+     Install with default options.
+
+5. VC++ 2022 Redistributable  (for bundling into the installer)
+     https://aka.ms/vs/17/release/vc_redist.x64.exe
+     Save to:  installer\vc_redist.x64.exe
+
+6. RNDIS USB driver  (OPTIONAL — for USB camera/Pi gadget mode)
+     The driver is built into Windows 10/11 via Windows Update.
+     To bundle it in your installer (so it installs silently):
+       https://github.com/albert-fit/windows_10_raspi_usb_otg_fix
+       Click Code -> Download ZIP -> extract -> find mod-duo-rndis folder
+       Copy mod-duo-rndis.inf + mod-duo-rndis.cat to installer\\drivers\\
+     https://github.com/dukelec/mbrush/tree/master/doc/win_driver
+     Download mod-duo-rndis.zip, extract to:  installer\drivers\
+     Final path should be: installer\drivers\mod-duo-rndis.inf
+
+
+BUILD (run every time you want a new installer)
+-----------------------------------------------
+  cd C:\MedCamPy
+  python build_exe.py
+
+  Step 1 — Checks all prerequisites
+  Step 2 — Collects GStreamer DLLs + plugins
+  Step 3 — Writes PyInstaller runtime hook
+  Step 4 — Writes PixelPro.spec + version_info.txt
+  Step 5 — Runs PyInstaller  (~5-10 min)
+  Step 6 — Stages installer assets
+  Step 7 — Runs NSIS -> PixelPro_Setup.exe
+
+  Total time: ~10-15 minutes on first run, ~5 min after that.
+
+
+OUTPUT
+------
+  installer\PixelPro_Setup.exe   (~250-350 MB)
+
+  This ONE file is everything needed worldwide.
+  Upload to Google Drive / OneDrive / your server and share the link.
+
+
+FOLDER STRUCTURE NEEDED BEFORE BUILD
+-------------------------------------
+  MedCamPy\
+    app.py
+    build_exe.py
+    assets\
+      logo.ico
+      logo.png
+    installer\
+      PixelPro.nsi
+      LICENSE.txt
+      vc_redist.x64.exe       <-- download as per step 5 above
+      drivers\
+        mod-duo-rndis.inf      <-- extract from mod-duo-rndis.zip
+        mod-duo-rndis.cat      <-- (same zip)
+        (other driver files)
+
+
+SILENT INSTALL (for IT deployment)
+------------------------------------
+  PixelPro_Setup.exe /S
+
+  Installs with no UI, no prompts. Safe for enterprise deployment.
+
+
+DATABASE LOCATION (on installed machines)
+-----------------------------------------
+  C:\Users\<user>\AppData\Roaming\Labomed\PixelPro\pixelpro.db
+  (or wherever APPDATA points — survives uninstall/reinstall)
+
+
+TROUBLESHOOTING
+---------------
+"GStreamer not found"
+  -> Confirm: C:\Program Files\gstreamer\1.0\msvc_x86_64\bin exists
+  -> Reinstall GStreamer choosing COMPLETE, not Runtime
+
+"PyInstaller fails with missing module"
+  -> pip install <module-name>
+  -> Re-run python build_exe.py
+
+"NSIS: command not found"
+  -> Install from https://nsis.sourceforge.io/Download
+  -> Default path: C:\Program Files (x86)\NSIS\
+
+"vc_redist.x64.exe not found"
+  -> Download: https://aka.ms/vs/17/release/vc_redist.x64.exe
+  -> Save to installer\vc_redist.x64.exe
+
+"USB camera not working on target machine"
+  -> RNDIS driver not installed (normal if mod-duo-rndis.zip was missing)
+  -> Tell user to install manually from:
+     https://github.com/dukelec/mbrush/tree/master/doc/win_driver
+
+PyInstaller takes 5-10 min — this is completely normal.
+=============================================================
